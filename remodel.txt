@@ -1,0 +1,28 @@
+HIGH-FIDELITY MODELING PLAN: BIOLOGICAL ENTRAINMENT CHAIN
+
+Goal: Transition from random stress spikes to a network of coupled biological oscillators to find genuine synchrony signal.
+
+1. CIRCADIAN ALIGNMENT 
+- Reference: phillips_2017_sleep_circadian.pdf
+- Logic: Replace static days with a 24h master clock for each individual.
+- Mechanism: Model roommates with "shared social constraints" (aligned sleep/wake and light exposure). This aligns the household to a shared circadian phase.
+
+2. DIURNAL HPA DYNAMICS
+- Reference: zavala_2020_stress_fertility.pdf
+- Logic: Replace "stress spikes" with a continuous HPA axis model (CRH-ACTH-Cortisol).
+- Mechanism: Cortisol production is gated by the circadian phase, creating a shared diurnal background. Stressors amplify this existing rhythm.
+
+3. SOCIAL CONTAGION
+- Reference: palumbo_2017_physio_sync.pdf
+- Logic: Implement weak Kuramoto-like coupling between the HPA oscillators of roommates.
+- Mechanism: Represents "Interpersonal Physiological Synchrony": emotional contagion and shared domestic environment. Stress in one individual slightly elevates the baseline stress of others.
+
+4. MECHANISTIC GnRH INHIBITION
+- Reference: voliotis_2019_gnrh_generator.pdf
+- Logic: Use the KNDy neuronal model for GnRH pulse generation.
+- Mechanism: The oscillating shared Cortisol background directly modulates the frequency of the pulse generator.
+
+5. MENSTRUAL HPG INTEGRATION
+- Reference: fischer_2022_menstrual_model.pdf (HormonalRegOvaFolCycInHuman.pdf)
+- Logic: Integrate the GnRH inhibition into the 54-equation mechanistic menstrual model.
+- Goal: Continuous "massaging" force on the follicular phase provides a much stronger candidate for dynamical entrainment.
