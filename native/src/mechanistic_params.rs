@@ -81,7 +81,7 @@ impl Default for ParaOde {
     fn default() -> Self {
         Self {
             v: 2.0,
-            gamma: 0.035 / 2.0,
+            gamma: 0.035 / 4.0, // Slowed down from /2.0
             xi: 25.0,
             mu: 1.0,
             k: 0.065 / (25.0 * 25.0),

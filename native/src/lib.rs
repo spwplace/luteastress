@@ -1,4 +1,5 @@
 mod cycle;
+mod zavala;
 mod mechanistic;
 mod mechanistic_params;
 mod simulation;
@@ -12,7 +13,6 @@ use cycle::CycleParams;
 use simulation::ExperimentConfig;
 use stress::StressConfig;
 
-/// Run a single experiment, returning trial-level arrays as a dict.
 #[pyfunction]
 #[pyo3(signature = (
     n_individuals = 6,
@@ -106,7 +106,6 @@ fn run_experiment(
     Ok(dict.into())
 }
 
-/// Run a parameter sweep in parallel, returning a list of experiment results.
 #[pyfunction]
 #[pyo3(signature = (
     param_name,
@@ -182,7 +181,6 @@ fn run_sweep(
         },
     };
 
-    // Build configs for each parameter value
     let configs: Vec<ExperimentConfig> = param_values
         .iter()
         .map(|&val| {
@@ -207,7 +205,6 @@ fn run_sweep(
         })
         .collect();
 
-    // Run all experiments (each experiment is already parallel internally via rayon)
     let results: Vec<_> = py.detach(|| {
         configs
             .iter()
@@ -215,7 +212,6 @@ fn run_sweep(
             .collect::<Vec<_>>()
     });
 
-    // Convert to Python dicts
     results
         .into_iter()
         .map(|result| {
@@ -237,7 +233,6 @@ fn run_sweep(
         .collect()
 }
 
-/// Run a 2D parameter sweep — grid of (param_a × param_b), returning flattened results.
 #[pyfunction]
 #[pyo3(signature = (
     param_a_name, param_a_values,
@@ -334,7 +329,6 @@ fn run_sweep_2d(
     let na = param_a_values.len();
     let nb = param_b_values.len();
 
-    // Build grid of configs
     let configs: Vec<ExperimentConfig> = param_a_values
         .iter()
         .flat_map(|&va| {
@@ -348,7 +342,6 @@ fn run_sweep_2d(
         })
         .collect();
 
-    // Run all in parallel (rayon parallelizes within each experiment)
     let results: Vec<_> = py.detach(|| {
         configs
             .iter()
@@ -356,7 +349,6 @@ fn run_sweep_2d(
             .collect::<Vec<_>>()
     });
 
-    // Flatten to arrays: shape [na * nb] in row-major order
     let dict = PyDict::new(py);
     let mean_tr: Vec<f64> = results
         .iter()
@@ -385,15 +377,6 @@ fn run_sweep_2d(
     dict.set_item("param_b_values", param_b_values)?;
 
     Ok(dict.into())
-}
-
-#[pymodule]
-fn luteastress_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(run_experiment, m)?)?;
-    m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
-    m.add_function(wrap_pyfunction!(run_sweep_2d, m)?)?;
-    m.add_function(wrap_pyfunction!(run_mechanistic_experiment, m)?)?;
-    Ok(())
 }
 
 #[pyfunction]
@@ -433,7 +416,7 @@ fn run_mechanistic_experiment(
         n_trials,
         seed,
         burnin_days,
-        heterogeneity: 0.0, // Not used in mechanistic yet
+        heterogeneity: 0.0,
         cycle_params: CycleParams::default(),
         stress_config: StressConfig {
             shared_event_rate,
@@ -456,4 +439,101 @@ fn run_mechanistic_experiment(
     dict.set_item("control_osi", control_osi)?;
 
     Ok(dict.into())
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    param_name,
+    param_values,
+    n_individuals = 6,
+    n_days = 365,
+    n_trials = 10,
+    seed = 42,
+    burnin_days = 60,
+    shared_event_rate = 0.05,
+    individual_event_rate = 0.07,
+    magnitude_mean_log = 0.0,
+    magnitude_sd_log = 0.7,
+    duration_mean = 2.0,
+    duration_sd = 1.0,
+    shared_exposure_prob = 0.85,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_mechanistic_sweep(
+    py: Python<'_>,
+    param_name: &str,
+    param_values: Vec<f64>,
+    n_individuals: usize,
+    n_days: usize,
+    n_trials: usize,
+    seed: u64,
+    burnin_days: usize,
+    shared_event_rate: f64,
+    individual_event_rate: f64,
+    magnitude_mean_log: f64,
+    magnitude_sd_log: f64,
+    duration_mean: f64,
+    duration_sd: f64,
+    shared_exposure_prob: f64,
+) -> PyResult<Vec<Py<PyDict>>> {
+    let base = ExperimentConfig {
+        n_individuals,
+        n_days,
+        n_trials,
+        seed,
+        burnin_days,
+        heterogeneity: 0.0,
+        cycle_params: CycleParams::default(),
+        stress_config: StressConfig {
+            shared_event_rate,
+            individual_event_rate,
+            magnitude_mean_log,
+            magnitude_sd_log,
+            duration_mean,
+            duration_sd,
+            shared_exposure_prob,
+        },
+    };
+
+    let configs: Vec<ExperimentConfig> = param_values
+        .iter()
+        .map(|&val| {
+            let mut cfg = base.clone();
+            match param_name {
+                "shared_event_rate" => cfg.stress_config.shared_event_rate = val,
+                "shared_exposure_prob" => cfg.stress_config.shared_exposure_prob = val,
+                _ => {}
+            }
+            cfg
+        })
+        .collect();
+
+    let results: Vec<_> = py.detach(|| {
+        configs
+            .iter()
+            .map(|cfg| simulation::run_mechanistic_experiment(cfg))
+            .collect::<Vec<_>>()
+    });
+
+    results
+        .into_iter()
+        .map(|res_vec| {
+            let dict = PyDict::new(py);
+            let to: Vec<f64> = res_vec.iter().map(|t| t.treatment_osi).collect();
+            let co: Vec<f64> = res_vec.iter().map(|t| t.control_osi).collect();
+            dict.set_item("treatment_osi", to)?;
+            dict.set_item("control_osi", co)?;
+            Ok(dict.into())
+        })
+        .collect()
+}
+
+#[pymodule]
+fn luteastress_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(run_experiment, m)?)?;
+    m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
+    m.add_function(wrap_pyfunction!(run_sweep_2d, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mechanistic_experiment, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mechanistic_sweep, m)?)?;
+    Ok(())
 }

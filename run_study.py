@@ -310,32 +310,95 @@ def run_large_sweep():
 
 def run_mechanistic_study():
     """Run the study using the high-fidelity mechanistic model in Rust."""
-    print("Running study with Mechanistic ODE model (Rust)...")
+    import matplotlib.pyplot as plt
+    from scipy import stats as sp_stats
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    # Validation settings
+    n_trials = 50
+    n_days = 365
+
+    print("Running study with High-Fidelity Mechanistic ODE model (Rust)")
+    print("  Chain: Shared Schedule -> Circadian -> HPA (Cortisol) -> GnRH")
+    print(f"  {n_trials} trials, {n_days} days, 6 individuals")
+    print()
+
+    # --- Main experiment ---
+    print("Main experiment...")
     start = time.time()
     results = luteastress_native.run_mechanistic_experiment(
         n_individuals=6,
-        n_days=365 * 2,
-        n_trials=50,
-        seed=42
+        n_days=n_days,
+        n_trials=n_trials,
+        seed=42,
     )
     duration = time.time() - start
-    
+
     t_osi = np.array(results["treatment_osi"])
     c_osi = np.array(results["control_osi"])
-    
-    print(f"\nCompleted 50 trials in {duration:.1f}s")
+
+    print(f"  Completed in {duration:.1f}s")
     print("=" * 60)
     print("MECHANISTIC MODEL RESULTS")
     print("=" * 60)
     print(f"Onset Synchrony Index (±5 days):")
     print(f"  Treatment: {np.mean(t_osi):.4f} (SD {np.std(t_osi):.4f})")
     print(f"  Control:   {np.mean(c_osi):.4f} (SD {np.std(c_osi):.4f})")
-    print(f"  Difference: {np.mean(t_osi - c_osi):.4f}")
-    
-    from scipy import stats
-    _, p = stats.wilcoxon(t_osi, c_osi, alternative="greater")
-    print(f"  Wilcoxon p: {p:.2e}")
+    print(f"  Difference: {np.mean(t_osi - c_osi):+.4f}")
+
+    if n_trials > 1:
+        _, p = sp_stats.wilcoxon(t_osi, c_osi, alternative="greater")
+        print(f"  Wilcoxon p: {p:.2e}")
     print("=" * 60)
+
+    # --- 1D sweeps ---
+    print("\n" + "=" * 60)
+    print("MECHANISTIC 1D SWEEPS")
+    print("=" * 60)
+
+    sweeps = {
+        "shared_event_rate": [0.0, 0.05, 0.1, 0.2], 
+        "shared_exposure_prob": [0.0, 0.5, 0.95],
+    }
+
+    if hasattr(luteastress_native, "run_mechanistic_sweep"):
+        for param_name, values in sweeps.items():
+            t0 = time.perf_counter()
+            sweep_results = luteastress_native.run_mechanistic_sweep(
+                param_name, values,
+                n_trials=n_trials,
+                n_days=n_days,
+            )
+            elapsed = time.perf_counter() - t0
+
+            print(f"\n{param_name} ({elapsed:.1f}s):")
+            print(f"  {'Value':>8}  {'t_OSI':>7}  {'c_OSI':>7}  {'ΔOSI':>7}")
+
+            t_means = []
+            c_means = []
+            for val, res in zip(values, sweep_results):
+                to = np.mean(res["treatment_osi"])
+                co = np.mean(res["control_osi"])
+                t_means.append(to)
+                c_means.append(co)
+                print(f"  {val:>8.3f}  {to:>7.4f}  {co:>7.4f}  {to - co:>+7.4f}")
+
+            # Plot
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            ax.plot(values, t_means, "o-", label="Shared stress")
+            ax.plot(values, c_means, "s-", label="Independent")
+            ax.set_xlabel(param_name)
+            ax.set_ylabel("Onset synchrony index")
+            ax.set_title(f"Mechanistic model: {param_name} sweep ({n_trials} trials, {n_days}d)")
+            ax.legend()
+            plt.tight_layout()
+            fname = f"mechanistic_sweep_{param_name}.png"
+            fig.savefig(OUTPUT_DIR / fname, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            print(f"  Saved {fname}")
+    
+    print(f"\nAll mechanistic results processed.")
 
 
 def main():
