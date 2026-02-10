@@ -4,7 +4,10 @@ use std::f64::consts::PI;
 /// Parameters from Zavala et al. (2020) Table S2.
 /// All rates converted from min⁻¹ to day⁻¹ (×1440) where noted.
 pub struct ZavalaParams {
-    /// Circadian base frequency: π/(24×60) /min → π/24 /day
+    /// Circadian base frequency: π/(24×60) /min × 1440 = π /day.
+    /// Adjusted for 24.2h intrinsic period (JFK99, Czeisler 1999):
+    /// ω = π × 24/24.2 ≈ 3.116 rad/day.
+    /// Convention: f_H = sin²(φ_H) has period π/ω ≈ 1.008 day.
     pub omega_h0: f64,
     /// CORT ultradian frequency: π/75 /min → 1440π/75 /day
     pub omega_c0: f64,
@@ -36,12 +39,19 @@ pub struct ZavalaParams {
     pub phi_s: f64,
     /// Stress window width (radians)
     pub theta_s: f64,
+    /// Zeitgeber coupling strength (Kuramoto forcing).
+    /// Heuristic from jet lag re-entrainment rate (~1 day/hr) and Arnold
+    /// tongue width. Not directly measured; treat as sensitivity parameter.
+    pub k_zeitgeber: f64,
+    /// Zeitgeber frequency: π /day (24h light-dark cycle, Zavala convention).
+    pub omega_zeitgeber: f64,
 }
 
 impl Default for ZavalaParams {
     fn default() -> Self {
         Self {
-            omega_h0: PI / 24.0,
+            // 24.2h intrinsic period: ω = π × (24/24.2)
+            omega_h0: PI * 24.0 / 24.2,
             omega_c0: 1440.0 * PI / 75.0,
             delta: 7.2,
             alpha: 0.05,
@@ -58,6 +68,8 @@ impl Default for ZavalaParams {
             // Stress window centered around activity period (φ_H ∈ [0, π])
             phi_s: 0.0,
             theta_s: PI,
+            k_zeitgeber: 0.5,
+            omega_zeitgeber: PI, // exactly 24h cycle
         }
     }
 }
@@ -77,6 +89,9 @@ pub struct ZavalaState {
     pub n_kndy: f64,
     /// Dynorphin (KNDy): dD/dt = f_E − D
     pub d_kndy: f64,
+    /// Zeitgeber phase offset (individual's light schedule).
+    /// Treatment: shared across cohabitants. Control: independent.
+    pub phi_z0: f64,
     /// Parameters
     pub params: ZavalaParams,
 }
@@ -86,6 +101,7 @@ impl ZavalaState {
     pub fn new(params: ZavalaParams, rng: &mut impl Rng) -> Self {
         let phi_h = rng.random_range(0.0..(2.0 * PI));
         let phi_c = rng.random_range(0.0..(2.0 * PI));
+        let phi_z0 = rng.random_range(0.0..(2.0 * PI));
         let f_h = phi_h.sin().powi(2);
         let a_c = f_h; // initial quasi-steady with no stress
         let c = a_c * phi_c.sin().powi(2);
@@ -96,6 +112,7 @@ impl ZavalaState {
             c_tilde: c,
             n_kndy: 0.5,
             d_kndy: 0.5,
+            phi_z0,
             params,
         }
     }
@@ -181,21 +198,35 @@ impl ZavalaState {
         Self::sigma_sig(p.h_sig * (x - g)) * Self::sigma_sig(p.h_sig * (y - g))
     }
 
-    /// Advance the Zavala network by one substep.
+    /// Advance the Zavala network by one substep using exponential integrators.
+    ///
+    /// All stiff linear ODEs of the form dx/dt = -k·x + f are integrated
+    /// exactly: x(t+dt) = x(t)·exp(-k·dt) + (f/k)·(1 - exp(-k·dt)).
+    /// Phase equations (linear accumulation) are exact with forward Euler.
+    ///
+    /// The CORT ultradian oscillator (φ_C) completes ~2.4 cycles per step
+    /// at dt=0.25 day. Its time-averaged cortisol <C> = a_C·<sin²(φ_C)> ≈
+    /// a_C/2, which drives C̃ instead of the aliased point-sample.
     ///
     /// # Arguments
     /// * `dt` - timestep in days
     /// * `stress_input` - current stress level (0 = none, >0 = active)
     /// * `phi_e` - estrous/menstrual phase (0–2π), computed from cycle model
-    pub fn step(&mut self, dt: f64, stress_input: f64, phi_e: f64) {
+    /// * `t` - absolute time in days (for zeitgeber phase computation)
+    pub fn step(&mut self, dt: f64, stress_input: f64, phi_e: f64, t: f64) {
         let p = &self.params;
         let s = self.s_gated(stress_input);
 
-        // Phase equations (always stable — just accumulation)
-        // dφ_H/dt = ω_H0 + β·(A_C·sin²(φ_C) − ⟨C⟩)
-        // Simplified: circadian phase advances at base rate with CORT coupling
-        let c = self.cortisol();
-        let d_phi_h = p.omega_h0 + p.beta * (c - self.c_tilde);
+        // --- Phase equations (exact: linear accumulation mod 2π) ---
+
+        // dφ_H/dt = ω_H0 + β·(C − C̃) + K_z·sin(φ_z − φ_H)
+        // Zeitgeber forcing (Kuramoto coupling) entrains φ_H to the
+        // external light-dark cycle. Phase reduction of JFK99 model.
+        let c_avg = self.a_c * 0.5; // <sin²(φ_C)> ≈ 0.5 over multiple cycles
+        let phi_z = p.omega_zeitgeber * t + self.phi_z0;
+        let d_phi_h = p.omega_h0
+            + p.beta * (c_avg - self.c_tilde)
+            + p.k_zeitgeber * (phi_z - self.phi_h).sin();
         self.phi_h = (self.phi_h + d_phi_h * dt) % (2.0 * PI);
         if self.phi_h < 0.0 {
             self.phi_h += 2.0 * PI;
@@ -208,21 +239,25 @@ impl ZavalaState {
             self.phi_c += 2.0 * PI;
         }
 
-        // Quasi-steady-state for a_c (τ_a = 1 min, way too fast for our dt)
-        // Steady state of: dA_C/dt = (1/τ_a)·(f_H·(1 + ε·s) − A_C)
+        // --- Algebraic: a_C quasi-steady-state (τ_a ≈ 1 min ≪ dt) ---
         let f_h = self.f_h();
         self.a_c = f_h * (1.0 + p.epsilon * s);
 
-        // S8: dC̃/dt = δ·(C − C̃) — slow genomic cortisol (Euler, stable)
-        let c_new = self.cortisol(); // recompute with updated a_c
-        let d_c_tilde = p.delta * (c_new - self.c_tilde);
-        self.c_tilde = (self.c_tilde + d_c_tilde * dt).max(0.0);
+        // --- Exponential integrators for stiff linear ODEs ---
 
-        // S5–S6: KNDy neuron tracking (Euler, very stable)
+        // S8: dC̃/dt = δ·(C − C̃), exact solution with piecewise-constant C.
+        // C oscillates at ~75 min period; its time-average is a_C/2.
+        // More precisely: <sin²> = 1/2 − sin(Δφ)·cos(2·φ_mid)/(2·Δφ)
+        // but with Δφ ≈ 15 rad the correction is ~2%, so use a_C/2.
+        let c_drive = self.a_c * 0.5;
+        let decay_c = (-p.delta * dt).exp();
+        self.c_tilde = (self.c_tilde * decay_c + c_drive * (1.0 - decay_c)).max(0.0);
+
+        // S5–S6: dN/dt = f_E − N and dD/dt = f_E − D
+        // Exact: N(t+dt) = N·exp(-dt) + f_E·(1 − exp(-dt))
         let f_e = Self::f_e(phi_e, p.sigma);
-        let d_n = f_e - self.n_kndy;
-        let d_d = f_e - self.d_kndy;
-        self.n_kndy = (self.n_kndy + d_n * dt).max(0.0);
-        self.d_kndy = (self.d_kndy + d_d * dt).max(0.0);
+        let decay_nd = (-dt).exp();
+        self.n_kndy = (self.n_kndy * decay_nd + f_e * (1.0 - decay_nd)).max(0.0);
+        self.d_kndy = (self.d_kndy * decay_nd + f_e * (1.0 - decay_nd)).max(0.0);
     }
 }

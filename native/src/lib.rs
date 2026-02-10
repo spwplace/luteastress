@@ -27,13 +27,10 @@ use stress::StressConfig;
     luteal_sd = 1.5,
     stress_sensitivity = 1.0,
     autocorrelation = 0.3,
-    shared_event_rate = 0.05,
-    individual_event_rate = 0.07,
-    magnitude_mean_log = 0.0,
-    magnitude_sd_log = 0.7,
-    duration_mean = 2.0,
-    duration_sd = 1.0,
-    shared_exposure_prob = 0.85,
+    theta = 7.0,
+    mu = 0.25,
+    sigma_total = 0.45,
+    shared_fraction = 0.3,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_experiment(
@@ -50,13 +47,10 @@ fn run_experiment(
     luteal_sd: f64,
     stress_sensitivity: f64,
     autocorrelation: f64,
-    shared_event_rate: f64,
-    individual_event_rate: f64,
-    magnitude_mean_log: f64,
-    magnitude_sd_log: f64,
-    duration_mean: f64,
-    duration_sd: f64,
-    shared_exposure_prob: f64,
+    theta: f64,
+    mu: f64,
+    sigma_total: f64,
+    shared_fraction: f64,
 ) -> PyResult<Py<PyDict>> {
     let config = ExperimentConfig {
         n_individuals,
@@ -74,14 +68,13 @@ fn run_experiment(
             autocorrelation,
         },
         stress_config: StressConfig {
-            shared_event_rate,
-            individual_event_rate,
-            magnitude_mean_log,
-            magnitude_sd_log,
-            duration_mean,
-            duration_sd,
-            shared_exposure_prob,
+            theta,
+            mu,
+            sigma_total,
+            shared_fraction,
+            ..Default::default()
         },
+        k_zeitgeber: 0.5,
     };
 
     let result = py.detach(|| simulation::run_experiment(&config));
@@ -122,13 +115,10 @@ fn run_experiment(
     luteal_sd = 1.5,
     stress_sensitivity = 1.0,
     autocorrelation = 0.3,
-    shared_event_rate = 0.05,
-    individual_event_rate = 0.07,
-    magnitude_mean_log = 0.0,
-    magnitude_sd_log = 0.7,
-    duration_mean = 2.0,
-    duration_sd = 1.0,
-    shared_exposure_prob = 0.85,
+    theta = 7.0,
+    mu = 0.25,
+    sigma_total = 0.45,
+    shared_fraction = 0.3,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_sweep(
@@ -147,13 +137,10 @@ fn run_sweep(
     luteal_sd: f64,
     stress_sensitivity: f64,
     autocorrelation: f64,
-    shared_event_rate: f64,
-    individual_event_rate: f64,
-    magnitude_mean_log: f64,
-    magnitude_sd_log: f64,
-    duration_mean: f64,
-    duration_sd: f64,
-    shared_exposure_prob: f64,
+    theta: f64,
+    mu: f64,
+    sigma_total: f64,
+    shared_fraction: f64,
 ) -> PyResult<Vec<Py<PyDict>>> {
     let base = ExperimentConfig {
         n_individuals,
@@ -171,36 +158,20 @@ fn run_sweep(
             autocorrelation,
         },
         stress_config: StressConfig {
-            shared_event_rate,
-            individual_event_rate,
-            magnitude_mean_log,
-            magnitude_sd_log,
-            duration_mean,
-            duration_sd,
-            shared_exposure_prob,
+            theta,
+            mu,
+            sigma_total,
+            shared_fraction,
+            ..Default::default()
         },
+        k_zeitgeber: 0.5,
     };
 
     let configs: Vec<ExperimentConfig> = param_values
         .iter()
         .map(|&val| {
             let mut cfg = base.clone();
-            match param_name {
-                "shared_event_rate" => cfg.stress_config.shared_event_rate = val,
-                "individual_event_rate" => cfg.stress_config.individual_event_rate = val,
-                "shared_exposure_prob" => cfg.stress_config.shared_exposure_prob = val,
-                "stress_sensitivity" => cfg.cycle_params.stress_sensitivity = val,
-                "follicular_mean" => cfg.cycle_params.follicular_mean = val,
-                "luteal_mean" => cfg.cycle_params.luteal_mean = val,
-                "follicular_sd" => cfg.cycle_params.follicular_sd = val,
-                "luteal_sd" => cfg.cycle_params.luteal_sd = val,
-                "autocorrelation" => cfg.cycle_params.autocorrelation = val,
-                "heterogeneity" => cfg.heterogeneity = val,
-                "n_individuals" => cfg.n_individuals = val as usize,
-                "magnitude_sd_log" => cfg.stress_config.magnitude_sd_log = val,
-                "duration_mean" => cfg.stress_config.duration_mean = val,
-                _ => {}
-            }
+            set_param(&mut cfg, param_name, val);
             cfg
         })
         .collect();
@@ -249,13 +220,10 @@ fn run_sweep(
     luteal_sd = 1.5,
     stress_sensitivity = 1.0,
     autocorrelation = 0.3,
-    shared_event_rate = 0.05,
-    individual_event_rate = 0.07,
-    magnitude_mean_log = 0.0,
-    magnitude_sd_log = 0.7,
-    duration_mean = 2.0,
-    duration_sd = 1.0,
-    shared_exposure_prob = 0.85,
+    theta = 7.0,
+    mu = 0.25,
+    sigma_total = 0.45,
+    shared_fraction = 0.3,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_sweep_2d(
@@ -276,13 +244,10 @@ fn run_sweep_2d(
     luteal_sd: f64,
     stress_sensitivity: f64,
     autocorrelation: f64,
-    shared_event_rate: f64,
-    individual_event_rate: f64,
-    magnitude_mean_log: f64,
-    magnitude_sd_log: f64,
-    duration_mean: f64,
-    duration_sd: f64,
-    shared_exposure_prob: f64,
+    theta: f64,
+    mu: f64,
+    sigma_total: f64,
+    shared_fraction: f64,
 ) -> PyResult<Py<PyDict>> {
     let base = ExperimentConfig {
         n_individuals,
@@ -300,31 +265,14 @@ fn run_sweep_2d(
             autocorrelation,
         },
         stress_config: StressConfig {
-            shared_event_rate,
-            individual_event_rate,
-            magnitude_mean_log,
-            magnitude_sd_log,
-            duration_mean,
-            duration_sd,
-            shared_exposure_prob,
+            theta,
+            mu,
+            sigma_total,
+            shared_fraction,
+            ..Default::default()
         },
+        k_zeitgeber: 0.5,
     };
-
-    fn set_param(cfg: &mut ExperimentConfig, name: &str, val: f64) {
-        match name {
-            "shared_event_rate" => cfg.stress_config.shared_event_rate = val,
-            "individual_event_rate" => cfg.stress_config.individual_event_rate = val,
-            "shared_exposure_prob" => cfg.stress_config.shared_exposure_prob = val,
-            "stress_sensitivity" => cfg.cycle_params.stress_sensitivity = val,
-            "follicular_mean" => cfg.cycle_params.follicular_mean = val,
-            "luteal_mean" => cfg.cycle_params.luteal_mean = val,
-            "follicular_sd" => cfg.cycle_params.follicular_sd = val,
-            "heterogeneity" => cfg.heterogeneity = val,
-            "n_individuals" => cfg.n_individuals = val as usize,
-            "autocorrelation" => cfg.cycle_params.autocorrelation = val,
-            _ => {}
-        }
-    }
 
     let na = param_a_values.len();
     let nb = param_b_values.len();
@@ -386,13 +334,11 @@ fn run_sweep_2d(
     n_trials = 10,
     seed = 42,
     burnin_days = 60,
-    shared_event_rate = 0.05,
-    individual_event_rate = 0.07,
-    magnitude_mean_log = 0.0,
-    magnitude_sd_log = 0.7,
-    duration_mean = 2.0,
-    duration_sd = 1.0,
-    shared_exposure_prob = 0.85,
+    theta = 7.0,
+    mu = 0.25,
+    sigma_total = 0.45,
+    shared_fraction = 0.3,
+    k_zeitgeber = 0.5,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mechanistic_experiment(
@@ -402,13 +348,11 @@ fn run_mechanistic_experiment(
     n_trials: usize,
     seed: u64,
     burnin_days: usize,
-    shared_event_rate: f64,
-    individual_event_rate: f64,
-    magnitude_mean_log: f64,
-    magnitude_sd_log: f64,
-    duration_mean: f64,
-    duration_sd: f64,
-    shared_exposure_prob: f64,
+    theta: f64,
+    mu: f64,
+    sigma_total: f64,
+    shared_fraction: f64,
+    k_zeitgeber: f64,
 ) -> PyResult<Py<PyDict>> {
     let config = ExperimentConfig {
         n_individuals,
@@ -419,14 +363,13 @@ fn run_mechanistic_experiment(
         heterogeneity: 0.0,
         cycle_params: CycleParams::default(),
         stress_config: StressConfig {
-            shared_event_rate,
-            individual_event_rate,
-            magnitude_mean_log,
-            magnitude_sd_log,
-            duration_mean,
-            duration_sd,
-            shared_exposure_prob,
+            theta,
+            mu,
+            sigma_total,
+            shared_fraction,
+            ..Default::default()
         },
+        k_zeitgeber,
     };
 
     let results = py.detach(|| simulation::run_mechanistic_experiment(&config));
@@ -434,9 +377,11 @@ fn run_mechanistic_experiment(
     let dict = PyDict::new(py);
     let treatment_osi: Vec<f64> = results.iter().map(|t| t.treatment_osi).collect();
     let control_osi: Vec<f64> = results.iter().map(|t| t.control_osi).collect();
+    let treatment_stress_corr: Vec<f64> = results.iter().map(|t| t.treatment_stress_corr).collect();
 
     dict.set_item("treatment_osi", treatment_osi)?;
     dict.set_item("control_osi", control_osi)?;
+    dict.set_item("treatment_stress_corr", treatment_stress_corr)?;
 
     Ok(dict.into())
 }
@@ -450,13 +395,11 @@ fn run_mechanistic_experiment(
     n_trials = 10,
     seed = 42,
     burnin_days = 60,
-    shared_event_rate = 0.05,
-    individual_event_rate = 0.07,
-    magnitude_mean_log = 0.0,
-    magnitude_sd_log = 0.7,
-    duration_mean = 2.0,
-    duration_sd = 1.0,
-    shared_exposure_prob = 0.85,
+    theta = 7.0,
+    mu = 0.25,
+    sigma_total = 0.45,
+    shared_fraction = 0.3,
+    k_zeitgeber = 0.5,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mechanistic_sweep(
@@ -468,13 +411,11 @@ fn run_mechanistic_sweep(
     n_trials: usize,
     seed: u64,
     burnin_days: usize,
-    shared_event_rate: f64,
-    individual_event_rate: f64,
-    magnitude_mean_log: f64,
-    magnitude_sd_log: f64,
-    duration_mean: f64,
-    duration_sd: f64,
-    shared_exposure_prob: f64,
+    theta: f64,
+    mu: f64,
+    sigma_total: f64,
+    shared_fraction: f64,
+    k_zeitgeber: f64,
 ) -> PyResult<Vec<Py<PyDict>>> {
     let base = ExperimentConfig {
         n_individuals,
@@ -485,14 +426,13 @@ fn run_mechanistic_sweep(
         heterogeneity: 0.0,
         cycle_params: CycleParams::default(),
         stress_config: StressConfig {
-            shared_event_rate,
-            individual_event_rate,
-            magnitude_mean_log,
-            magnitude_sd_log,
-            duration_mean,
-            duration_sd,
-            shared_exposure_prob,
+            theta,
+            mu,
+            sigma_total,
+            shared_fraction,
+            ..Default::default()
         },
+        k_zeitgeber,
     };
 
     let configs: Vec<ExperimentConfig> = param_values
@@ -500,8 +440,11 @@ fn run_mechanistic_sweep(
         .map(|&val| {
             let mut cfg = base.clone();
             match param_name {
-                "shared_event_rate" => cfg.stress_config.shared_event_rate = val,
-                "shared_exposure_prob" => cfg.stress_config.shared_exposure_prob = val,
+                "shared_fraction" => cfg.stress_config.shared_fraction = val,
+                "theta" => cfg.stress_config.theta = val,
+                "mu" => cfg.stress_config.mu = val,
+                "sigma_total" => cfg.stress_config.sigma_total = val,
+                "k_zeitgeber" => cfg.k_zeitgeber = val,
                 _ => {}
             }
             cfg
@@ -521,11 +464,32 @@ fn run_mechanistic_sweep(
             let dict = PyDict::new(py);
             let to: Vec<f64> = res_vec.iter().map(|t| t.treatment_osi).collect();
             let co: Vec<f64> = res_vec.iter().map(|t| t.control_osi).collect();
+            let sc: Vec<f64> = res_vec.iter().map(|t| t.treatment_stress_corr).collect();
             dict.set_item("treatment_osi", to)?;
             dict.set_item("control_osi", co)?;
+            dict.set_item("treatment_stress_corr", sc)?;
             Ok(dict.into())
         })
         .collect()
+}
+
+fn set_param(cfg: &mut ExperimentConfig, name: &str, val: f64) {
+    match name {
+        "shared_fraction" => cfg.stress_config.shared_fraction = val,
+        "theta" => cfg.stress_config.theta = val,
+        "mu" => cfg.stress_config.mu = val,
+        "sigma_total" => cfg.stress_config.sigma_total = val,
+        "stress_sensitivity" => cfg.cycle_params.stress_sensitivity = val,
+        "follicular_mean" => cfg.cycle_params.follicular_mean = val,
+        "luteal_mean" => cfg.cycle_params.luteal_mean = val,
+        "follicular_sd" => cfg.cycle_params.follicular_sd = val,
+        "luteal_sd" => cfg.cycle_params.luteal_sd = val,
+        "heterogeneity" => cfg.heterogeneity = val,
+        "k_zeitgeber" => cfg.k_zeitgeber = val,
+        "n_individuals" => cfg.n_individuals = val as usize,
+        "autocorrelation" => cfg.cycle_params.autocorrelation = val,
+        _ => {}
+    }
 }
 
 #[pymodule]

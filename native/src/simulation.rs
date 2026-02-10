@@ -2,9 +2,12 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
+use rand_distr::{Distribution, LogNormal, Normal};
+
 use crate::cycle::{CycleParams, CycleState, advance_day, create_population, init_cycle};
 use crate::mechanistic::MenstrualMechanisticModel;
 use crate::stress::{StressConfig, generate_independent_stress, generate_stress_timeline};
+use crate::zavala::ZavalaParams;
 use crate::synchrony::{
     compute_phases, mean_resultant_length, onset_synchrony_index, rayleigh_test,
 };
@@ -19,6 +22,9 @@ pub struct ExperimentConfig {
     pub stress_config: StressConfig,
     pub burnin_days: usize,
     pub heterogeneity: f64,
+    /// Zeitgeber coupling strength for mechanistic model (default 0.5).
+    /// Heuristic; sweep for sensitivity analysis.
+    pub k_zeitgeber: f64,
 }
 
 impl Default for ExperimentConfig {
@@ -32,6 +38,7 @@ impl Default for ExperimentConfig {
             stress_config: StressConfig::default(),
             burnin_days: 90,
             heterogeneity: 0.15,
+            k_zeitgeber: 0.5,
         }
     }
 }
@@ -136,41 +143,108 @@ fn run_trial(config: &ExperimentConfig, trial_seed: u64) -> TrialResult {
 pub struct MechanisticTrialResult {
     pub treatment_osi: f64,
     pub control_osi: f64,
+    /// Mean pairwise Pearson r of treatment stress timelines.
+    /// Validates shared_fraction → realized correlation mapping.
+    pub treatment_stress_corr: f64,
+}
+
+/// Mean pairwise Pearson correlation across all individual pairs.
+fn mean_pairwise_correlation(timelines: &[Vec<f64>]) -> f64 {
+    let n = timelines.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut sum_r = 0.0;
+    let mut count = 0;
+    for i in 0..n {
+        let len_i = timelines[i].len();
+        let mean_i: f64 = timelines[i].iter().sum::<f64>() / len_i as f64;
+        for j in (i + 1)..n {
+            let len = len_i.min(timelines[j].len());
+            let mean_j: f64 = timelines[j][..len].iter().sum::<f64>() / len as f64;
+            let mut cov = 0.0;
+            let mut var_i = 0.0;
+            let mut var_j = 0.0;
+            for k in 0..len {
+                let di = timelines[i][k] - mean_i;
+                let dj = timelines[j][k] - mean_j;
+                cov += di * dj;
+                var_i += di * di;
+                var_j += dj * dj;
+            }
+            let denom = (var_i * var_j).sqrt();
+            if denom > 0.0 {
+                sum_r += cov / denom;
+            }
+            count += 1;
+        }
+    }
+    if count > 0 { sum_r / count as f64 } else { 0.0 }
 }
 
 pub fn run_mechanistic_trial(config: &ExperimentConfig, trial_seed: u64) -> MechanisticTrialResult {
     let mut rng = ChaCha8Rng::seed_from_u64(trial_seed);
 
+    let steps_per_day: usize = 4;
+    let dt = 1.0 / steps_per_day as f64;
+
+    // Sub-day stress resolution for mechanistic model
+    let mut mech_stress_config = config.stress_config.clone();
+    mech_stress_config.steps_per_day = steps_per_day;
+
     let stress_treatment = generate_stress_timeline(
         config.n_individuals,
         config.n_days,
-        &config.stress_config,
+        &mech_stress_config,
         &mut ChaCha8Rng::seed_from_u64(trial_seed.wrapping_add(2_000_000)),
     );
     let stress_control = generate_independent_stress(
         config.n_individuals,
         config.n_days,
-        &config.stress_config,
+        &mech_stress_config,
         &mut ChaCha8Rng::seed_from_u64(trial_seed.wrapping_add(3_000_000)),
     );
+
+    // Realized stress correlation for validation
+    let treatment_stress_corr = mean_pairwise_correlation(&stress_treatment);
+
+    // Between-person heterogeneity distributions
+    let z_normal = Normal::new(0.0, 1.0).unwrap();
+    let mut z_defaults = ZavalaParams::default();
+    z_defaults.k_zeitgeber = config.k_zeitgeber;
+    let epsilon_dist = LogNormal::new(z_defaults.epsilon.ln(), 0.5).unwrap();
 
     let mut pop_t: Vec<MenstrualMechanisticModel> = (0..config.n_individuals)
         .map(|i| {
             let mut m = MenstrualMechanisticModel::new(trial_seed.wrapping_add(i as u64), &mut rng);
+            // Heterogeneity: stress→CORT coupling (LogNormal, right-skewed)
+            m.zavala.params.epsilon = epsilon_dist.sample(&mut rng).max(0.01);
+            // Heterogeneity: intrinsic period (±0.38h at 95% CI; Duffy 2011, forced desynchrony)
+            m.zavala.params.omega_h0 = z_defaults.omega_h0 * (1.0 + z_normal.sample(&mut rng) * 0.008);
+            // Heterogeneity: stress→circadian coupling
+            m.zavala.params.alpha = (z_defaults.alpha + z_normal.sample(&mut rng) * 0.01).max(0.0);
+            // Zeitgeber coupling (from config for sensitivity sweep)
+            m.zavala.params.k_zeitgeber = z_defaults.k_zeitgeber;
             m.randomize_initial_state(&mut rng);
             m
         })
         .collect();
 
-    // Treatment: shared circadian phase (cohabitants on same light schedule)
-    let shared_phi_h = pop_t[0].zavala.phi_h;
+    // Treatment: shared zeitgeber phase (cohabitants on same light schedule).
+    // Continuous Kuramoto forcing entrains all circadian oscillators to the
+    // same external phase, maintaining coherence despite HPA perturbations.
+    let shared_phi_z0 = pop_t[0].zavala.phi_z0;
     for m in &mut pop_t {
-        m.zavala.phi_h = shared_phi_h;
+        m.zavala.phi_z0 = shared_phi_z0;
     }
 
     let mut pop_c: Vec<MenstrualMechanisticModel> = (0..config.n_individuals)
         .map(|i| {
             let mut m = MenstrualMechanisticModel::new(trial_seed.wrapping_add(i as u64 + 1000), &mut rng);
+            m.zavala.params.epsilon = epsilon_dist.sample(&mut rng).max(0.01);
+            m.zavala.params.omega_h0 = z_defaults.omega_h0 * (1.0 + z_normal.sample(&mut rng) * 0.008);
+            m.zavala.params.alpha = (z_defaults.alpha + z_normal.sample(&mut rng) * 0.01).max(0.0);
+            m.zavala.params.k_zeitgeber = z_defaults.k_zeitgeber;
             m.randomize_initial_state(&mut rng);
             m
         })
@@ -180,18 +254,16 @@ pub fn run_mechanistic_trial(config: &ExperimentConfig, trial_seed: u64) -> Mech
     let mut rng_t = ChaCha8Rng::seed_from_u64(trial_seed.wrapping_add(4_000_000));
     let mut rng_c = ChaCha8Rng::seed_from_u64(trial_seed.wrapping_add(5_000_000));
 
-    let steps_per_day = 4;
-    let dt = 1.0 / steps_per_day as f64;
-
     for day in 0..config.n_days {
-        for _ in 0..steps_per_day {
+        for step in 0..steps_per_day {
+            let stress_idx = day * steps_per_day + step;
             for (i, model) in pop_t.iter_mut().enumerate() {
-                model.stress_input = stress_treatment[i][day];
+                model.stress_input = stress_treatment[i][stress_idx];
                 model.step(dt, &mut rng_t);
             }
 
             for (i, model) in pop_c.iter_mut().enumerate() {
-                model.stress_input = stress_control[i][day];
+                model.stress_input = stress_control[i][stress_idx];
                 model.step(dt, &mut rng_c);
             }
         }
@@ -222,6 +294,7 @@ pub fn run_mechanistic_trial(config: &ExperimentConfig, trial_seed: u64) -> Mech
     MechanisticTrialResult {
         treatment_osi: onset_synchrony_index(&onsets_t, 5.0),
         control_osi: onset_synchrony_index(&onsets_c, 5.0),
+        treatment_stress_corr,
     }
 }
 
@@ -261,15 +334,14 @@ pub fn run_mechanistic_sweep(
         .map(|&val| {
             let mut cfg = base.clone();
             match param_name {
-                "shared_event_rate" => cfg.stress_config.shared_event_rate = val,
-                "individual_event_rate" => cfg.stress_config.individual_event_rate = val,
-                "shared_exposure_prob" => cfg.stress_config.shared_exposure_prob = val,
+                "shared_fraction" => cfg.stress_config.shared_fraction = val,
+                "theta" => cfg.stress_config.theta = val,
+                "mu" => cfg.stress_config.mu = val,
+                "sigma_total" => cfg.stress_config.sigma_total = val,
+                "k_zeitgeber" => cfg.k_zeitgeber = val,
                 "stress_sensitivity" => {
                     cfg.cycle_params.stress_sensitivity = val;
                 }
-                "magnitude_mean_log" => cfg.stress_config.magnitude_mean_log = val,
-                "magnitude_sd_log" => cfg.stress_config.magnitude_sd_log = val,
-                "duration_mean" => cfg.stress_config.duration_mean = val,
                 _ => {}
             }
             run_mechanistic_experiment(&cfg)

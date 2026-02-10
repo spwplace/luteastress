@@ -94,10 +94,16 @@ impl MenstrualMechanisticModel {
         // --- 1. Update Zavala neuroendocrine network ---
         // Compute estrous/menstrual phase from last ovulation
         let days_since_ov = self.t - self.last_ovulation_t;
-        let cycle_len = 28.0; // nominal human cycle length
-        let phi_e = 2.0 * PI * (days_since_ov / cycle_len) % (2.0 * PI);
+        let cycle_len = if self.cumulative_ovulations.len() >= 2 {
+            let n = self.cumulative_ovulations.len();
+            let interval = self.cumulative_ovulations[n - 1] - self.cumulative_ovulations[n - 2];
+            if interval >= 18.0 && interval <= 45.0 { interval } else { 28.0 }
+        } else {
+            28.0
+        };
+        let phi_e = (2.0 * PI * days_since_ov / cycle_len).clamp(0.0, 2.0 * PI - 1e-10);
 
-        self.zavala.step(dt, self.stress_input, phi_e);
+        self.zavala.step(dt, self.stress_input, phi_e, self.t);
         let f_k = self.zavala.compute_f_k(self.stress_input);
 
         // --- 2. Recruit new follicles ---
